@@ -253,4 +253,80 @@ $$ S_p = {1 \over \alpha + {1 - \alpha \over p}} $$
 
 ### Функция шардирования
 
-Давайте теперь научимся делать на шарды.
+Давайте теперь научимся делить на шарды. Придумаем волшебную функцию, которая будет определять в какой шард класть наш объект. Пробежимся по основным подходам и их минусам, подробнее можете почитать самостоятельно, это не входит в скоуп статьи.
+
+$$Shard = ShardingFunction(ObjectKey)$$
+
+Требования к функции:
+
+* Детерминированность
+* Равномерность
+* Устойчивость к изменениям состава узлов (rebalancing)
+
+1. $Shard = someReproducibleHash()$
+
+    Неплохая функция, для одной записи идем на один определенный сервер, но для диапазона ключей придется просканировать чуть ли не все шарды.
+
+2. $Shard = date \% num\_shards$ – естественное шардирование.
+
+    Проблема с диапазном решается отчасти, так как решение будет заточено под конкретный кейс и некоторые шарды могут простаивать в зависимости от распределения запросов (например, шарды побили по неделям, и, вероятность, что запрос попадет в последние недели – последний шард, намного выше).
+
+Есть еще куча разных вариантов функций, я лишь осветил базовые подходы, вы можете придумать критерий деления сами, учитывая требования и аналитику запросов.
+
+После выбора функции шардирования нужно:
+
+* сделать распределение данных равномерным
+* научиться решардить при увеличении данных, изменении требований и тп. (Consistent Hashing, HRW и тп, это выходит за скоуп статьи).
+
+Для большого количества NewSQL и NoSQL решений достаточно подкрутить настройки и выставить $number_of_shards$, посмотрим шардинг на примере объектно-реляционной PostgreSQL.
+
+### Шардирование через наследование на примере PostgreSQL
+
+1. Пусть у нас есть следующая таблица `post` – шард с category_id=1.
+
+    ```sql
+        CREATE TABLE post (
+            id bigint not null,
+            author character varying not null,
+            category_id int not null
+            CONSTRAINT category_id_check CHECK (category_id_check)
+        );
+    ```
+
+2. Подключаем EXTENSION postgres_fdw из коробки для настройки шардинга, заводим удаленный сервер и создаем маппинг для пользователя.
+
+    ```sql
+       CREATE EXTENSIONS potgres_fdw;
+
+       CREATE SERVER post_1_server;
+       FOREIGN DATA WRAPPER potgres_fdw;
+       OPTIONS (host '127.0.0.1', port '5432', dbname 'post_1');
+
+       CREATE USER MAPPING FOR postgres
+       SERVER post_1_server
+       OPTIONS (user 'postgres', password 'postgres');
+    ```
+
+3. Заводим таблицу на основном сервере. Также поступаем с другой таблицей.
+
+    ```sql
+        CREATE TABLE post_1 (
+            id bigint not null,
+            author character varying not null,
+            category_id int not null
+            CONSTRAINT category_id_check CHECK (category_id_check)
+        )
+        SERVER post_1_server
+        OPTIONS (schema_name 'public', table_name 'post');
+    ```
+
+4. Далее заводим основную таблицу.
+
+     ```sql
+        CREATE VIEW post AS
+            SELECT * FROM post_1
+                UNION ALL
+            SELECT * FROM post_2;a
+    ```
+
+5. Добавляем правила, как в партиционировании и проверяем.
